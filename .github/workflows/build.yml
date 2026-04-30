@@ -58,13 +58,12 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${WORKDIR}"
-
           if [ -f "../${FEEDS_FILE}" ]; then
+            sed -i 's/\r$//' "../${FEEDS_FILE}"
             echo "" >> feeds.conf.default
             echo "# custom feeds" >> feeds.conf.default
             cat "../${FEEDS_FILE}" >> feeds.conf.default
           fi
-
           echo "===== feeds.conf.default ====="
           cat feeds.conf.default | tee feeds.conf.default.dump
 
