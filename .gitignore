@@ -1,0 +1,5 @@
+artifacts/
+immortalwrt/
+*.log
+*.tmp
+.DS_Store
