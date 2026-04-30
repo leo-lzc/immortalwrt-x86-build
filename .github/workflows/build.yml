@@ -16,6 +16,7 @@ env:
   WORKDIR: immortalwrt
   FEEDS_FILE: feeds.extra.conf
   CONFIG_FILE: seed.config
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -26,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
           android: true
@@ -156,4 +157,4 @@ jobs:
           sed -i 's/\r$//' "${CONFIG_FILE}"
           cd "${WORKDIR}"
           cp "../${CONFIG_FILE}" .config
-          make defconfig 2>&1 | tee defc
+          make defconfig 2>&1 | tee defconfig.log
