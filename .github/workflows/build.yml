@@ -211,15 +211,46 @@ jobs:
           cd "${WORKDIR}"
           find bin/targets -type f | sort
 
+      - name: Prepare firmware artifact
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/artifact/firmware"
+          cd "${WORKDIR}"
+          rsync -a --exclude='packages' bin/targets/ "${GITHUB_WORKSPACE}/artifact/firmware/"
+
+      - name: Prepare logs artifact
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/artifact/logs"
+          cd "${WORKDIR}"
+
+          cp -f feeds.conf.default.dump "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f feeds-remote-check.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f feeds-update.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f feeds-install.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f defconfig.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f download.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f build.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          cp -f .config "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+
       - name: Upload firmware
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: immortalwrt-firmware
-          path: |
-            ${{ env.WORKDIR }}/bin/targets/**/*
-            !${{ env.WORKDIR }}/bin/targets/**/packages/**
+          path: artifact/firmware
           if-no-files-found: error
           retention-days: 7
 
-      - name
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-logs
+          path: artifact/logs
+          if-no-files-found: warn
+          retention-days: 7
