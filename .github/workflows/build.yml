@@ -16,29 +16,50 @@ env:
   WORKDIR: immortalwrt
   FEEDS_FILE: feeds.extra.conf
   CONFIG_FILE: seed.config
+  TZ: Asia/Shanghai
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Show runner info
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          df -hT
+
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          swap-storage: false
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          df -hT
+
+      - name: Set timezone
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo timedatectl set-timezone "${TZ}" || true
+          date
 
       - name: Install dependencies
         shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             ack antlr3 asciidoc autoconf automake autopoint build-essential \
@@ -71,7 +92,7 @@ jobs:
           fi
 
           echo "===== feeds.conf.default ====="
-          tee feeds.conf.default.dump < feeds.conf.default
+          cat feeds.conf.default | tee feeds.conf.default.dump
 
       - name: Check custom feed remotes
         shell: bash
@@ -133,7 +154,7 @@ jobs:
           while read -r feed; do
             echo "===== updating feed: ${feed} =====" | tee -a feeds-update.log
             retry_update "${feed}"
-          done < <(awk '/^src-(git|git-full|svn|link|cpy)/ {print $2}' feeds.conf.default)
+          done < <(awk '/^src-(git|git-full|svn|link|cpy)/ {print $2}' feeds.conf.default | sort -u)
 
           echo "===== feeds directory =====" | tee -a feeds-update.log
           ls -lah feeds 2>&1 | tee -a feeds-update.log || true
@@ -148,7 +169,11 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${WORKDIR}"
-          ./scripts/feeds install -a 2>&1 | tee feeds-install.log
+
+          if ! ./scripts/feeds install -a 2>&1 | tee feeds-install.log; then
+            echo "Retry install feeds with -f" | tee -a feeds-install.log
+            ./scripts/feeds install -a -f 2>&1 | tee -a feeds-install.log
+          fi
 
       - name: Copy seed config
         shell: bash
@@ -158,3 +183,43 @@ jobs:
           cd "${WORKDIR}"
           cp "../${CONFIG_FILE}" .config
           make defconfig 2>&1 | tee defconfig.log
+
+      - name: Download packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${WORKDIR}"
+          make download -j"$(nproc)" 2>&1 | tee download.log
+          find dl -size -1024c -print -delete || true
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${WORKDIR}"
+
+          if ! make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo "Parallel build failed, retrying with single thread..." | tee -a build.log
+            make -j1 V=s 2>&1 | tee -a build.log
+          fi
+
+      - name: Show output files
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${WORKDIR}"
+          find bin/targets -type f | sort
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-firmware
+          path: |
+            ${{ env.WORKDIR }}/bin/targets/**/*
+            !${{ env.WORKDIR }}/bin/targets/**/packages/**
+          if-no-files-found: error
+          retention-days: 7
+
+      - name
