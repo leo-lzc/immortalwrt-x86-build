@@ -1,5 +1,49 @@
-artifacts/
-immortalwrt/
+# Build output
+/bin/
+/build_dir/
+/staging_dir/
+/tmp/
+/logs/
+
+# Download cache
+/dl/
+
+# Generated feeds
+/feeds/
+/package/feeds/
+
+# Generated config/cache/meta files
+/.config.old
+/.config.*
+!/.config
+/feeds.buildinfo
+/version.buildinfo
+/.vermagic
+/.packageinfo
+/.targetinfo
+/.packagedeps
+/.pkgdir/
+/packages.tmpinfo
+
+# Signing keys generated during build
+/key-build
+/key-build.pub
+/*.usign
+
+# Temporary files
 *.log
 *.tmp
+*.bak
+*.swp
+*.swo
+*.orig
+*.rej
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# OS junk
 .DS_Store
+Thumbs.db
+desktop.ini
