@@ -1,0 +1,16 @@
+#!/bin/sh
+
+uci batch <<'EOT'
+set system.@system[0].hostname='immortalwrt'
+set network.lan.ipaddr='192.168.1.1'
+set network.lan.netmask='255.255.255.0'
+set network.lan.ip6assign='60'
+set dhcp.@dnsmasq[0].domain='lan'
+set dhcp.@dnsmasq[0].expandhosts='1'
+EOT
+
+uci commit system
+uci commit network
+uci commit dhcp
+
+exit 0
