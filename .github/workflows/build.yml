@@ -67,7 +67,7 @@ jobs:
           echo "===== feeds.conf.default ====="
           cat feeds.conf.default | tee feeds.conf.default.dump
 
-      - name: Check custom feed remotes
+            - name: Check custom feed remotes
         shell: bash
         run: |
           set -euxo pipefail
@@ -76,13 +76,20 @@ jobs:
           : > feeds-remote-check.log
 
           if [ -f "../${FEEDS_FILE}" ]; then
+            sed -i 's/\r$//' "../${FEEDS_FILE}"
+
             while read -r type name url; do
               [ -z "${type:-}" ] && continue
               [[ "${type}" =~ ^# ]] && continue
 
+              type="${type%$'\r'}"
+              name="${name%$'\r'}"
+              url="${url%$'\r'}"
+
               case "${type}" in
                 src-git|src-git-full)
                   clean_url="${url%%;*}"
+                  clean_url="${clean_url%$'\r'}"
                   echo "===== CHECK ${name} -> ${clean_url} =====" | tee -a feeds-remote-check.log
                   git ls-remote "${clean_url}" HEAD 2>&1 | tee -a feeds-remote-check.log
                   ;;
