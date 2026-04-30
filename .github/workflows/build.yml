@@ -36,6 +36,7 @@ jobs:
           swap-storage: false
 
       - name: Install dependencies
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -50,7 +51,9 @@ jobs:
             zlib1g-dev zstd
 
       - name: Clone source
+        shell: bash
         run: |
+          set -euxo pipefail
           git clone --depth=1 -b "${REPO_BRANCH}" "${REPO_URL}" "${WORKDIR}"
 
       - name: Prepare feeds config
@@ -58,16 +61,18 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${WORKDIR}"
+
           if [ -f "../${FEEDS_FILE}" ]; then
             sed -i 's/\r$//' "../${FEEDS_FILE}"
             echo "" >> feeds.conf.default
             echo "# custom feeds" >> feeds.conf.default
             cat "../${FEEDS_FILE}" >> feeds.conf.default
           fi
-          echo "===== feeds.conf.default ====="
-          cat feeds.conf.default | tee feeds.conf.default.dump
 
-            - name: Check custom feed remotes
+          echo "===== feeds.conf.default ====="
+          tee feeds.conf.default.dump < feeds.conf.default
+
+      - name: Check custom feed remotes
         shell: bash
         run: |
           set -euxo pipefail
@@ -113,7 +118,6 @@ jobs:
           retry_update() {
             local feed="$1"
             local n=0
-
             until ./scripts/feeds update "${feed}" 2>&1 | tee -a feeds-update.log; do
               n=$((n+1))
               if [ "${n}" -ge 3 ]; then
@@ -133,8 +137,10 @@ jobs:
           echo "===== feeds directory =====" | tee -a feeds-update.log
           ls -lah feeds 2>&1 | tee -a feeds-update.log || true
 
-          echo "===== passwall2 directory check =====" | tee -a feeds-update.log
-          [ -d feeds/passwall2 ] && echo "passwall2 exists" | tee -a feeds-update.log || (echo "passwall2 missing" | tee -a feeds-update.log; exit 1)
+          if grep -qE '^[[:space:]]*src-git[[:space:]]+passwall2[[:space:]]' feeds.conf.default; then
+            echo "===== passwall2 directory check =====" | tee -a feeds-update.log
+            [ -d feeds/passwall2 ] && echo "passwall2 exists" | tee -a feeds-update.log || (echo "passwall2 missing" | tee -a feeds-update.log; exit 1)
+          fi
 
       - name: Install feeds
         shell: bash
@@ -147,48 +153,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sed -i 's/\r$//' "${CONFIG_FILE}"
           cd "${WORKDIR}"
           cp "../${CONFIG_FILE}" .config
-          make defconfig 2>&1 | tee defconfig.log
-
-      - name: Download sources
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "${WORKDIR}"
-          make download -j"$(nproc)" 2>&1 | tee download.log
-          find dl -size -1024c -type f -print -delete || true
-
-      - name: Build firmware
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "${WORKDIR}"
-          make -j"$(nproc)" V=s 2>&1 | tee build.log || \
-          (make -j1 V=s 2>&1 | tee -a build.log; exit 1)
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            immortalwrt/feeds.conf.default
-            immortalwrt/feeds.conf.default.dump
-            immortalwrt/feeds-remote-check.log
-            immortalwrt/feeds-update.log
-            immortalwrt/feeds-install.log
-            immortalwrt/defconfig.log
-            immortalwrt/download.log
-            immortalwrt/build.log
-            immortalwrt/.config
-          if-no-files-found: warn
-
-      - name: Upload firmware
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: firmware
-          path: |
-            immortalwrt/bin/targets/**/*
-          if-no-files-found: warn
+          make defconfig 2>&1 | tee defc
