@@ -23,8 +23,8 @@
 
 ## 默认信息
 
-- 地址: http://192.168.1.1
-- 地址: http://immortalwrt.lan
+- 地址：[192.168.1.1](http://192.168.1.1)
+- 地址：[immortalwrt.lan](http://immortalwrt.lan)
 - 用户名: root
 - 密码: 空
 
