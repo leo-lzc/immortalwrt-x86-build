@@ -11,7 +11,7 @@ on:
       - "feeds.extra.conf"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt.git
@@ -23,25 +23,29 @@ env:
   # Release 中保留的版本数量
   KEEP_RELEASES: 5
 
-  # 防止 GitHub Actions 自动升级 Node 版本时产生兼容性问题
+  # 兼容 GitHub Actions 的 Node 版本变更
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     name: Build ${{ matrix.device }}
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - device: x86_64
             config: configs/x86_64.config
-
           - device: redmi-ax6
             config: configs/redmi-ax6.config
-
           - device: rpi-4
             config: configs/rpi-4.config
+
+    env:
+      DEVICE: ${{ matrix.device }}
+      CONFIG_FILE: ${{ matrix.config }}
 
     steps:
       - name: Checkout repository
@@ -160,8 +164,7 @@ jobs:
             [ -z "${feed}" ] && continue
             retry_update "${feed}"
           done < <(
-            awk '/^src-(git|git-full|svn|link|cpy)/ {print $2}' \
-              feeds.conf.default | sort -u
+            awk '/^src-(git|git-full|svn|link|cpy)/ {print $2}' feeds.conf.default | sort -u
           )
 
       - name: Install feeds
@@ -180,11 +183,11 @@ jobs:
         run: |
           set -euxo pipefail
 
-          test -f "${matrix.config}"
-          sed -i 's/\r$//' "${matrix.config}"
+          test -f "${CONFIG_FILE}"
+          sed -i 's/\r$//' "${CONFIG_FILE}"
 
           cd "${WORKDIR}"
-          cp "../${matrix.config}" .config
+          cp "../${CONFIG_FILE}" .config
 
           # 只构建 squashfs，禁用 ext4
           sed -i '/CONFIG_TARGET_ROOTFS_EXT4FS/d' .config
@@ -216,7 +219,7 @@ jobs:
             make -j1 V=s 2>&1 | tee -a build.log
           fi
 
-      - name: List build output
+      - name: Show output files
         if: success()
         shell: bash
         run: |
@@ -224,15 +227,15 @@ jobs:
           cd "${WORKDIR}"
           find bin/targets -type f | sort
 
-      - name: Prepare firmware files
+      - name: Prepare firmware artifact
         if: success()
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/firmware/${matrix.device}"
+          mkdir -p "${GITHUB_WORKSPACE}/artifact/firmware/${DEVICE}"
           cd "${WORKDIR}"
 
-          # 只复制最终固件文件，并扁平化文件名
+          # 只保留最终固件文件，扁平化命名，避免 release 打包时路径混乱
           find bin/targets -type f \
             ! -path '*/packages/*' \
             ! -name '*.manifest' \
@@ -241,48 +244,43 @@ jobs:
             -print0 | while IFS= read -r -d '' file; do
               rel="${file#bin/targets/}"
               flat_name="${rel//\//_}"
-              cp -f "${file}" \
-                "${GITHUB_WORKSPACE}/firmware/${matrix.device}/${flat_name}"
+              cp -f "${file}" "${GITHUB_WORKSPACE}/artifact/firmware/${DEVICE}/${flat_name}"
             done
 
-          test -n "$(find "${GITHUB_WORKSPACE}/firmware/${matrix.device}" -type f -print -quit)"
+          test -n "$(find "${GITHUB_WORKSPACE}/artifact/firmware/${DEVICE}" -type f -print -quit)"
 
-      - name: Upload firmware artifact
+      - name: Prepare logs artifact
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}"
+          cd "${WORKDIR}"
+
+          cp -f feeds.conf.default.dump "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f feeds-remote-check.log "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f feeds-update.log "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f feeds-install.log "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f defconfig.log "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f download.log "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f build.log "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+          cp -f .config "${GITHUB_WORKSPACE}/artifact/logs/${DEVICE}/" 2>/dev/null || true
+
+      - name: Upload firmware
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.device }}
-          path: firmware/${{ matrix.device }}/*
+          path: artifact/firmware/${{ matrix.device }}
           if-no-files-found: error
           retention-days: 7
 
-      - name: Prepare failure logs
-        if: failure()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/logs/${matrix.device}"
-
-          cd "${WORKDIR}"
-          for file in \
-            feeds.conf.default.dump \
-            feeds-remote-check.log \
-            feeds-update.log \
-            feeds-install.log \
-            defconfig.log \
-            download.log \
-            build.log \
-            .config; do
-            cp -f "${file}" \
-              "${GITHUB_WORKSPACE}/logs/${matrix.device}/" 2>/dev/null || true
-          done
-
-      - name: Upload failure logs
-        if: failure()
+      - name: Upload logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.device }}
-          path: logs/${{ matrix.device }}
+          path: artifact/logs/${{ matrix.device }}
           if-no-files-found: warn
           retention-days: 14
 
@@ -291,6 +289,8 @@ jobs:
     needs: build
     if: needs.build.result == 'success'
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -337,7 +337,7 @@ jobs:
             echo
             echo "## 固件下载"
             echo
-          } > release_notes.md
+          } >> release_notes.md
 
           for dir in firmware-artifacts/firmware-*; do
             [ -d "${dir}" ] || continue
@@ -346,7 +346,6 @@ jobs:
             zip_file="release-assets/immortalwrt-${device}-${BUILD_DATE}.zip"
             checksum_file="${zip_file}.sha256"
 
-            # -j 表示只打包文件，不保留目录结构
             (cd "${dir}" && zip -j "${GITHUB_WORKSPACE}/${zip_file}" ./*)
             sha256sum "${zip_file}" > "${checksum_file}"
 
@@ -412,7 +411,6 @@ jobs:
                 -H 'Accept: application/vnd.github+json' \
                 "/repos/${repo}/releases/${release_id}"
 
-              # 同时删除对应 Git tag；删除失败不影响主流程
               gh api \
                 --method DELETE \
                 -H 'Accept: application/vnd.github+json' \
