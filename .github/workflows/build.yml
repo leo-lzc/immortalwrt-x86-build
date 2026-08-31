@@ -182,7 +182,19 @@ jobs:
           sed -i 's/\r$//' "${CONFIG_FILE}"
           cd "${WORKDIR}"
           cp "../${CONFIG_FILE}" .config
+
+          # only build squashfs, disable ext4, keep partition size
+          sed -i '/CONFIG_TARGET_ROOTFS_EXT4FS/d' .config
+          sed -i '/CONFIG_TARGET_ROOTFS_SQUASHFS/d' .config
+
+          echo 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' >> .config
+          echo '# CONFIG_TARGET_ROOTFS_EXT4FS is not set' >> .config
+
           make defconfig 2>&1 | tee defconfig.log
+
+          echo "===== rootfs image config ====="
+          grep -E 'CONFIG_TARGET_ROOTFS|CONFIG_TARGET_IMAGES_GZIP' .config || true
+          
 
       - name: Download packages
         shell: bash
