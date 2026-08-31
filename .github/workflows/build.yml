@@ -1,4 +1,4 @@
-name: Build ImmortalWrt
+name: Build ImmortalWrt Multi Device
 
 on:
   workflow_dispatch:
@@ -7,29 +7,47 @@ on:
       - main
     paths:
       - ".github/workflows/build.yml"
+      - "configs/**"
       - "feeds.extra.conf"
-      - "seed.config"
+
+permissions:
+  contents: write
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt.git
   REPO_BRANCH: master
   WORKDIR: immortalwrt
   FEEDS_FILE: feeds.extra.conf
-  CONFIG_FILE: seed.config
   TZ: Asia/Shanghai
+
+  # Release 中保留的版本数量
+  KEEP_RELEASES: 5
+
+  # 防止 GitHub Actions 自动升级 Node 版本时产生兼容性问题
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
+    name: Build ${{ matrix.device }}
     runs-on: ubuntu-22.04
-    permissions:
-      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: x86_64
+            config: configs/x86_64.config
+
+          - device: redmi-ax6
+            config: configs/redmi-ax6.config
+
+          - device: rpi-4
+            config: configs/rpi-4.config
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show runner info
+      - name: Show runner information
         shell: bash
         run: |
           set -euxo pipefail
@@ -70,15 +88,15 @@ jobs:
             libreadline-dev libssl-dev libtool lrzsz msmtp nano ninja-build p7zip-full \
             patch pkgconf python3 python3-pip python3-ply python3-docutils rsync \
             scons squashfs-tools subversion swig texinfo uglifyjs unzip vim wget xxd \
-            zlib1g-dev zstd
+            zlib1g-dev zstd zip
 
-      - name: Clone source
+      - name: Clone ImmortalWrt source
         shell: bash
         run: |
           set -euxo pipefail
           git clone --depth=1 -b "${REPO_BRANCH}" "${REPO_URL}" "${WORKDIR}"
 
-      - name: Prepare feeds config
+      - name: Prepare feeds configuration
         shell: bash
         run: |
           set -euxo pipefail
@@ -86,47 +104,34 @@ jobs:
 
           if [ -f "../${FEEDS_FILE}" ]; then
             sed -i 's/\r$//' "../${FEEDS_FILE}"
-            echo "" >> feeds.conf.default
-            echo "# custom feeds" >> feeds.conf.default
-            cat "../${FEEDS_FILE}" >> feeds.conf.default
+            {
+              echo "# custom feeds"
+              cat "../${FEEDS_FILE}"
+            } > feeds.conf.default
           fi
 
-          echo "===== feeds.conf.default ====="
           cat feeds.conf.default | tee feeds.conf.default.dump
 
-      - name: Check custom feed remotes
+      - name: Check feed remotes
         shell: bash
         run: |
           set -euxo pipefail
           cd "${WORKDIR}"
-
           : > feeds-remote-check.log
 
           if [ -f "../${FEEDS_FILE}" ]; then
-            sed -i 's/\r$//' "../${FEEDS_FILE}"
-
             while read -r type name url; do
               [ -z "${type:-}" ] && continue
               [[ "${type}" =~ ^# ]] && continue
 
-              type="${type%$'\r'}"
-              name="${name%$'\r'}"
-              url="${url%$'\r'}"
-
               case "${type}" in
                 src-git|src-git-full)
                   clean_url="${url%%;*}"
-                  clean_url="${clean_url%$'\r'}"
                   echo "===== CHECK ${name} -> ${clean_url} =====" | tee -a feeds-remote-check.log
                   git ls-remote "${clean_url}" HEAD 2>&1 | tee -a feeds-remote-check.log
                   ;;
-                *)
-                  echo "SKIP ${type} ${name} ${url}" | tee -a feeds-remote-check.log
-                  ;;
               esac
             done < "../${FEEDS_FILE}"
-          else
-            echo "No ${FEEDS_FILE} found." | tee -a feeds-remote-check.log
           fi
 
       - name: Update feeds
@@ -134,35 +139,30 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${WORKDIR}"
-
           : > feeds-update.log
 
           retry_update() {
             local feed="$1"
-            local n=0
+            local attempt=0
+
             until ./scripts/feeds update "${feed}" 2>&1 | tee -a feeds-update.log; do
-              n=$((n+1))
-              if [ "${n}" -ge 3 ]; then
-                echo "ERROR: feed '${feed}' update failed after 3 tries" | tee -a feeds-update.log
+              attempt=$((attempt + 1))
+              if [ "${attempt}" -ge 3 ]; then
+                echo "ERROR: feed '${feed}' update failed" | tee -a feeds-update.log
                 return 1
               fi
-              echo "Retry ${n}/3 for feed '${feed}' after 10 seconds..." | tee -a feeds-update.log
+              echo "Retry ${attempt}/3 for ${feed}..." | tee -a feeds-update.log
               sleep 10
             done
           }
 
           while read -r feed; do
-            echo "===== updating feed: ${feed} =====" | tee -a feeds-update.log
+            [ -z "${feed}" ] && continue
             retry_update "${feed}"
-          done < <(awk '/^src-(git|git-full|svn|link|cpy)/ {print $2}' feeds.conf.default | sort -u)
-
-          echo "===== feeds directory =====" | tee -a feeds-update.log
-          ls -lah feeds 2>&1 | tee -a feeds-update.log || true
-
-          if grep -qE '^[[:space:]]*src-git[[:space:]]+passwall2[[:space:]]' feeds.conf.default; then
-            echo "===== passwall2 directory check =====" | tee -a feeds-update.log
-            [ -d feeds/passwall2 ] && echo "passwall2 exists" | tee -a feeds-update.log || (echo "passwall2 missing" | tee -a feeds-update.log; exit 1)
-          fi
+          done < <(
+            awk '/^src-(git|git-full|svn|link|cpy)/ {print $2}' \
+              feeds.conf.default | sort -u
+          )
 
       - name: Install feeds
         shell: bash
@@ -171,30 +171,31 @@ jobs:
           cd "${WORKDIR}"
 
           if ! ./scripts/feeds install -a 2>&1 | tee feeds-install.log; then
-            echo "Retry install feeds with -f" | tee -a feeds-install.log
+            echo "Retry installing feeds with -f" | tee -a feeds-install.log
             ./scripts/feeds install -a -f 2>&1 | tee -a feeds-install.log
           fi
 
-      - name: Copy seed config
+      - name: Apply device configuration
         shell: bash
         run: |
           set -euxo pipefail
-          sed -i 's/\r$//' "${CONFIG_FILE}"
-          cd "${WORKDIR}"
-          cp "../${CONFIG_FILE}" .config
 
-          # only build squashfs, disable ext4, keep partition size
+          test -f "${matrix.config}"
+          sed -i 's/\r$//' "${matrix.config}"
+
+          cd "${WORKDIR}"
+          cp "../${matrix.config}" .config
+
+          # 只构建 squashfs，禁用 ext4
           sed -i '/CONFIG_TARGET_ROOTFS_EXT4FS/d' .config
           sed -i '/CONFIG_TARGET_ROOTFS_SQUASHFS/d' .config
-
           echo 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' >> .config
           echo '# CONFIG_TARGET_ROOTFS_EXT4FS is not set' >> .config
 
           make defconfig 2>&1 | tee defconfig.log
 
-          echo "===== rootfs image config ====="
-          grep -E 'CONFIG_TARGET_ROOTFS|CONFIG_TARGET_IMAGES_GZIP' .config || true
-          
+          echo "===== target configuration ====="
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|DEVICE_)' .config || true
 
       - name: Download packages
         shell: bash
@@ -211,11 +212,11 @@ jobs:
           cd "${WORKDIR}"
 
           if ! make -j"$(nproc)" 2>&1 | tee build.log; then
-            echo "Parallel build failed, retrying with single thread..." | tee -a build.log
+            echo "Parallel build failed, retrying with one job..." | tee -a build.log
             make -j1 V=s 2>&1 | tee -a build.log
           fi
 
-      - name: Show output files
+      - name: List build output
         if: success()
         shell: bash
         run: |
@@ -223,46 +224,198 @@ jobs:
           cd "${WORKDIR}"
           find bin/targets -type f | sort
 
-      - name: Prepare firmware artifact
+      - name: Prepare firmware files
         if: success()
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/artifact/firmware"
-          cd "${WORKDIR}"
-          rsync -a --exclude='packages' bin/targets/ "${GITHUB_WORKSPACE}/artifact/firmware/"
-
-      - name: Prepare logs artifact
-        if: always()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/artifact/logs"
+          mkdir -p "${GITHUB_WORKSPACE}/firmware/${matrix.device}"
           cd "${WORKDIR}"
 
-          cp -f feeds.conf.default.dump "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f feeds-remote-check.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f feeds-update.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f feeds-install.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f defconfig.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f download.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f build.log "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
-          cp -f .config "${GITHUB_WORKSPACE}/artifact/logs/" 2>/dev/null || true
+          # 只复制最终固件文件，并扁平化文件名
+          find bin/targets -type f \
+            ! -path '*/packages/*' \
+            ! -name '*.manifest' \
+            ! -name '*.buildinfo' \
+            ! -name '*.json' \
+            -print0 | while IFS= read -r -d '' file; do
+              rel="${file#bin/targets/}"
+              flat_name="${rel//\//_}"
+              cp -f "${file}" \
+                "${GITHUB_WORKSPACE}/firmware/${matrix.device}/${flat_name}"
+            done
 
-      - name: Upload firmware
+          test -n "$(find "${GITHUB_WORKSPACE}/firmware/${matrix.device}" -type f -print -quit)"
+
+      - name: Upload firmware artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: immortalwrt-firmware
-          path: artifact/firmware
+          name: firmware-${{ matrix.device }}
+          path: firmware/${{ matrix.device }}/*
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload logs
-        if: always()
+      - name: Prepare failure logs
+        if: failure()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/logs/${matrix.device}"
+
+          cd "${WORKDIR}"
+          for file in \
+            feeds.conf.default.dump \
+            feeds-remote-check.log \
+            feeds-update.log \
+            feeds-install.log \
+            defconfig.log \
+            download.log \
+            build.log \
+            .config; do
+            cp -f "${file}" \
+              "${GITHUB_WORKSPACE}/logs/${matrix.device}/" 2>/dev/null || true
+          done
+
+      - name: Upload failure logs
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: immortalwrt-logs
-          path: artifact/logs
+          name: logs-${{ matrix.device }}
+          path: logs/${{ matrix.device }}
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
+
+  release:
+    name: Create Release
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip jq
+
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          path: firmware-artifacts
+          merge-multiple: false
+
+      - name: Prepare ZIP assets and release notes
+        id: metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          BUILD_DATE="$(TZ="${TZ}" date +%Y%m%d-%H%M%S)"
+          BUILD_TIME="$(TZ="${TZ}" date '+%F %T %Z')"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="v${BUILD_DATE}-${SHORT_SHA}"
+          RELEASE_NAME="ImmortalWrt ${BUILD_DATE}"
+
+          mkdir -p release-assets
+          : > release_notes.md
+
+          {
+            echo "# ImmortalWrt 正式版"
+            echo
+            echo "## 编译信息"
+            echo
+            echo "- 编译时间: ${BUILD_TIME}"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- 分支: \`${GITHUB_REF_NAME}\`"
+            echo "- Run ID: \`${GITHUB_RUN_ID}\`"
+            echo
+            echo "## 固件下载"
+            echo
+          } > release_notes.md
+
+          for dir in firmware-artifacts/firmware-*; do
+            [ -d "${dir}" ] || continue
+
+            device="${dir#firmware-artifacts/firmware-}"
+            zip_file="release-assets/immortalwrt-${device}-${BUILD_DATE}.zip"
+            checksum_file="${zip_file}.sha256"
+
+            # -j 表示只打包文件，不保留目录结构
+            (cd "${dir}" && zip -j "${GITHUB_WORKSPACE}/${zip_file}" ./*)
+            sha256sum "${zip_file}" > "${checksum_file}"
+
+            {
+              echo "### ${device}"
+              echo
+              echo "- ZIP: \`$(basename "${zip_file}")\`"
+              echo "- SHA256:"
+              echo
+              echo '```text'
+              cat "${checksum_file}"
+              echo '```'
+              echo
+            } >> release_notes.md
+          done
+
+          test -n "$(find release-assets -type f -name '*.zip' -print -quit)"
+
+          {
+            echo "tag=${TAG}"
+            echo "release_name=${RELEASE_NAME}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create formal GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          name: ${{ steps.metadata.outputs.release_name }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean old Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+
+          keep="${KEEP_RELEASES}"
+          current_tag="${{ steps.metadata.outputs.tag }}"
+          repo="${GITHUB_REPOSITORY}"
+
+          echo "Keeping newest ${keep} releases"
+
+          gh api \
+            --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${repo}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .created_at] | @tsv' \
+          | tail -n +$((keep + 1)) \
+          | while IFS=$'\t' read -r release_id tag_name created_at; do
+              [ -z "${release_id}" ] && continue
+              [ "${tag_name}" = "${current_tag}" ] && continue
+
+              echo "Deleting old release: ${tag_name} (${created_at})"
+
+              gh api \
+                --method DELETE \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${repo}/releases/${release_id}"
+
+              # 同时删除对应 Git tag；删除失败不影响主流程
+              gh api \
+                --method DELETE \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${repo}/git/refs/tags/${tag_name}" \
+                || true
+            done
