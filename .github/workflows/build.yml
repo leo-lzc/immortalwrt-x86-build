@@ -2,15 +2,6 @@ name: Build ImmortalWrt x86
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - ".github/workflows/build.yml"
-      - "seed.config"
-      - "feeds.extra.conf"
-      - "files/**"
 
 concurrency:
   group: immortalwrt-x86-build
@@ -61,7 +52,7 @@ jobs:
 
           echo "Custom files:"
           if [ -d files ]; then
-            find files -type f -maxdepth 5 -print
+            find files -maxdepth 5 -type f -print
           else
             echo "No files directory found."
           fi
@@ -187,7 +178,7 @@ jobs:
   release:
     runs-on: ubuntu-22.04
     needs: build
-    if: needs.build.result == 'success' && github.event_name == 'workflow_dispatch'
+    if: needs.build.result == 'success'
 
     permissions:
       contents: write
